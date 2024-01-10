@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from astropy.io import fits
 from scipy.constants import c
+import os
 ###############
 
 
@@ -13,7 +14,7 @@ def read_in_data(file) :
     IN : file as ordner/filename
     OUT: 2D-array data, time, frequency
     """
-    path = '/Users/juliusadolff/Desktop/Interferometer 2024/' + file
+    path = os.path.join(os.getcwd(), file)
     f = fits.open(path)
     data = np.array(f[0].data, dtype=float)
     t = f[1].data['TIME'][0]
@@ -174,8 +175,6 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
     t_range = t[a-d : a+d]
     
     # Generate Arrays for Return
-    V0 = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
-    V0_uncertainties = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
     lamda = c/freqs[freq_pos[0] : freq_pos[1]]
     
     # Find optimal Beff
@@ -210,6 +209,9 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
     print("")
     
     # Loop over all frequencies, use opt_params from previous as p0 
+    V0 = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
+    V0_uncertainties = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
+    phi = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
     our_freqs = np.arange(freq_pos[0], freq_pos[1])
     for k, f in enumerate(our_freqs) :
         # Model For Fit (lambda dependet)
@@ -224,6 +226,7 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
         # Update
         V0[k] = params[0]
         V0_uncertainties[k] = np.sqrt(cov[0, 0])
+        phi[k] = params[1]
         
         # Optimal Paramters
         if f == fmin :
@@ -243,7 +246,7 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
         """
         
     # Return Dependence
-    return V0, V0_uncertainties, Beff_opt/lamda, params_opt
+    return V0, V0_uncertainties, Beff_opt/lamda, params_opt, phi
 ##################
 
 ### Nice Plot ###
