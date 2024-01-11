@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from astropy.io import fits
 from scipy.constants import c
-import os
 ###############
 
 
@@ -158,9 +157,8 @@ def data_filter(data, t, freq_pos, p0) :
         chi2 = 1.0 * np.sum( (model_fit(t, *params) - data[f, :])**2 ) 
         
         # Plot Fitted Data
-        """
-        print(f"chisq in fit of {k}th f: r = {chi2:.3}")
-        if k % 10 == 0:
+        #print(f"chisq in fit of {k}th f: r = {chi2:.3}")
+        if k == 10 :
             plt.figure()
             plt.plot(t, data[f, :], label=f"Raw Data of {k}th f")
             plt.plot(t, model_fit(t, *params), label="Fit of Offset and Exponential")
@@ -168,7 +166,6 @@ def data_filter(data, t, freq_pos, p0) :
             plt.ylabel("Spectral Density [W/Hz]")
             plt.legend()
             plt.show()
-        """
         
         # Get Optimal Parameters
         if f == fmin :
@@ -208,7 +205,7 @@ def data_fitter(data_filtered, data_filtered_error, t, freqs, freq_pos, tmax, si
     # Concentrate on sigma/2 neighboorhoud tmax
     eps = 5.0
     a = np.where(eps > abs(tmax - t))[0][0]
-    d = ( np.where(eps > abs(tmax + sigma/omega - t))[0][0] - np.where(eps > abs(tmax - t))[0][0] ) // 2
+    d = np.where(eps > abs(tmax + sigma/(2 * omega) - t))[0][0] - np.where(eps > abs(tmax - t))[0][0]
     t_range = t[a-d : a+d]
     
     # Generate Arrays for Return
@@ -284,10 +281,9 @@ def data_fitter(data_filtered, data_filtered_error, t, freqs, freq_pos, tmax, si
             params_opt = np.array([params[0], Beff_opt, params[1]])
             
         # Plot Fitted Data
-        """
-        chi2 = 1.0 * np.sum( (model_fit(t_range, *params) - data_filtered[k, a-d : a+d])**2 ) 
-        print(f"chisq in fit of {k}th f: r = {chi2:.3}")
-        if k % 10 == 0:
+        #chi2 = 1.0 * np.sum( (model_fit(t_range, *params) - data_filtered[k, a-d : a+d])**2 ) 
+        #print(f"chisq in fit of {k}th f: r = {chi2:.3}")
+        if k == 10:
             plt.figure()
             plt.errorbar(t_range, data_filtered[k, a-d : a+d], yerr=data_filtered_error[k, a-d : a+d], fmt=".", label=f"Filtered Data of {k}th f")
             plt.plot(t_range, model_fit(t_range, *params), label="Fit of Wavelength Dependence")
@@ -295,7 +291,6 @@ def data_fitter(data_filtered, data_filtered_error, t, freqs, freq_pos, tmax, si
             plt.ylabel("Spectral Density [W/Hz]")
             plt.legend()
             plt.show()
-        """
         
     # Return Dependence
     return V0, V0_uncertainties, Beff_opt/lamda, Beff_sig/lamda, params_opt
@@ -343,7 +338,7 @@ def sun_diameter(V0, V0_uncert, Bl, Bl_sig, p) :
     """
     
     #m = np.median(alpha_mc)
-    m, _ = curve_fit(sinc, Bl, abs(V0), p0=p, sigma=V0_uncert)
+    m, _ = curve_fit(sinc, Bl, abs(V0), p0=p)
     s = np.std(alpha_mc)
     
     plt.figure()
