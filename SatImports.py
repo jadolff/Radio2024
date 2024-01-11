@@ -5,12 +5,17 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from astropy.io import fits
 from scipy.constants import c
+from scipy.optimize import fsolve
+from scipy.constants import G
 
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 plt.rcParams["figure.figsize"] = (8,4)
 plt.rcParams['font.size'] = 25
 plt.style.use('ggplot')
+
+rng = np.random.default_rng()
+
 ###############
 
 
@@ -47,6 +52,17 @@ def max_neigh(data, range_1, range_2) :
     box = data[range_1[0]:range_1[1], range_2[0]:range_2[1]]
     argmax = np.where( box == max(box.copy().flatten()) )
     return argmax[0][0] + range_1[0], argmax[1][0] + range_2[0]
+
+
+
+def monte_carlo_h(omega_mean, omega_sig):
+    N_mc = 1000
+    omegas = rng.normal(omega_mean, omega_sig, 1000)
+    h_sims = np.zeros(N_mc, dtype=float)
+    for i in range(N_mc):
+        func = lambda h : omegas[i]**2 * (6371e3 + h)*h**2 - G * 5.972e24
+        h_sims[i] = fsolve(func, 2000e3)[0]
+    return np.mean(h_sims), np.std(h_sims)
 
 def fit_sat(data, pos_sat, t, freq, p01, p02) :
     """
@@ -86,6 +102,7 @@ def fit_sat(data, pos_sat, t, freq, p01, p02) :
     plt.show()
     
     omega = np.mean([params2[0], params[1]])
+    omega_sig = np.mean([np.sqrt(cov[1,1]), np.sqrt(cov2[0,0])])
     #omega = params[1]
     
     Ptot = lambda t : params[0] * (1 + np.cos(2 * np.pi * B * params2[0] * t / l + params2[1])) * np.exp(-params[1]**2 * (t - tmax)**2 / (2 * 0.065**2) ) + (params[2] * t + params[3])
@@ -99,14 +116,12 @@ def fit_sat(data, pos_sat, t, freq, p01, p02) :
     plt.show()
 
     # Determining the height of the satelite
-    from scipy.optimize import fsolve
-    from scipy.constants import G
-    func = lambda h : omega**2 * (6371e3 + h)*h**2 - G * 5.972e24
-    h = fsolve(func, 2000e3)[0]
+    h, h_sig = monte_carlo_h(omega, omega_sig)
     
-    print(f"Angular Velocity of Satelite from our PoV: omega ~ {omega:.3} ± {np.sqrt(cov[1, 1]):.3} 1/s")
+    
+    print(f"Angular Velocity of Satelite from our PoV: omega ~ {omega:.3} ± {omega_sig:.3} 1/s")
     print(f"Velocity of Satelite: vr ~ {omega*h:.3} m/s")
     omega_prime = omega * h / (6371e3 + h)
     print(f"Period of Satelite: T ~ {2 * np.pi / omega_prime:.3} s = {2 * np.pi / (60 * omega_prime):.3} min")
-    print(f"Height of Salelite: h ~ {h:.3} m")
+    print(f"Height of Salelite: h ~ {h:.3} ± {h_sig:.3}m")
 ###############
