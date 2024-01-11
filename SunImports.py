@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from astropy.io import fits
 from scipy.constants import c
+import os
 ###############
 
 
@@ -13,7 +14,7 @@ def read_in_data(file) :
     IN : file as ordner/filename
     OUT: 2D-array data, time, frequency
     """
-    path = '/Users/juliusadolff/Desktop/Interferometer 2024/' + file
+    path = os.path.join(os.getcwd(),file)
     f = fits.open(path)
     data = np.array(f[0].data, dtype=float)
     t = f[1].data['TIME'][0]
