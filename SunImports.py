@@ -344,8 +344,8 @@ def sun_diameter(V0, V0_uncert, Bl, Bl_sig, p) :
     plt.show()
     """
     
-    #m = np.median(alpha_mc)
-    m, _ = curve_fit(sinc, Bl, abs(V0), p0=p)
+    m = np.median(alpha_mc)
+    #m, _ = curve_fit(sinc, Bl, abs(V0), p0=p)
     s = np.std(alpha_mc)
     
     plt.figure()
@@ -376,15 +376,16 @@ def sun_diameter(V0, V0_uncert, Bl, Bl_sig, p) :
 ##################
 
 ### Final Glueing ###
-def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, p) :
+def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, time, p) :
     
     V0 = np.concatenate(V0s); V0_uncert = np.concatenate(V0_uncerts)
     Bl = np.concatenate(Bls); Bl_sig = np.concatenate(Bl_sigs)
     
-    
+    """
     # Monte Carlo with Uniform distribution --> Baseline
-    N_mc = 10000; n = 10
+    N_mc = 10000; n = 3
     alpha_mc = np.zeros(N_mc, dtype=float)
+    alpha_sig = np.zeros(N_mc, dtype=float)
     Bl_mc = np.array([ rng.uniform(low=(Bl[i] - n * Bl_sig[i]), high=(Bl[i] + n * Bl_sig[i]), size=N_mc) for i in range(len(Bl)) ])
     
     # Monte Carlo with normal distribution --> V0
@@ -393,7 +394,8 @@ def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, p) :
     # Calculation of Alpha
     alpha_mc = np.zeros(N_mc, dtype=float)
     for i in range(N_mc) :
-        p, _ = curve_fit(sinc, Bl_mc[:, i], abs(V0_mc[i, :]), p0=p)
+        p, cov_fit = curve_fit(sinc, Bl_mc[:, i], abs(V0_mc[i, :]), p0=p)
+        alpha_sig[i] = np.sqrt(cov_fit[0, 0])
         alpha_mc[i] = p
     plt.figure()
     plt.hist(alpha_mc)
@@ -403,26 +405,55 @@ def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, p) :
     
     m = np.median(alpha_mc)
     #m, _ = curve_fit(sinc, Bl, abs(V0), p0=p)
+    s = np.std(alpha_mc) + np.mean(alpha_sig)
+    """
+    
+    # Use Analytic Solution for alpha
+    from scipy.optimize import fsolve
+    N_mc = 500
+    n = len(V0)
+    alpha_cloud = []
+    for i in range(n) :
+        Bl_mc = rng.uniform(low=(Bl[i] - 3 * Bl_sig[i]), high=(Bl[i] + 3 * Bl_sig[i]), size=N_mc)
+        V0_mc = rng.multivariate_normal(np.array([V0[i]]), np.diag([V0_uncert[i]**2]), N_mc)
+        for j in range(N_mc) :
+            bl_mc, v0_mc = Bl_mc[j], V0_mc[j]
+            if v0_mc > 1 or v0_mc < 0 :
+                continue
+            sinc_fsolve = lambda alpha : v0_mc - sinc(bl_mc, alpha)
+            jac_fsolve = lambda alpha : np.cos(np.pi * alpha * bl_mc) / alpha - np.sin(np.pi * alpha * bl_mc) / (np.pi * alpha**2 * bl_mc)
+            alpha_cloud.append( fsolve(sinc_fsolve, 0.01, xtol=1e-14, fprime=jac_fsolve)[0] )
+    
+    alpha_mc = np.sort(np.array(alpha_cloud))
+    
+    plt.figure()
+    plt.hist(alpha_mc, bins=100)
+    plt.xlabel(r"$\alpha$")
+    plt.ylabel("Frequency")
+    plt.show()
+    m = np.median(alpha_mc)
     s = np.std(alpha_mc)
     
     plt.figure()
-    for bl, bl_sig, v0, v0_uncert in zip(Bls, Bl_sigs, V0s, V0_uncerts) :
-        plt.errorbar(bl, abs(v0), v0_uncert, label="Different Data Sets", xerr=bl_sig, fmt=".")
+    for bl, bl_sig, v0, v0_uncert, t in zip(Bls, Bl_sigs, V0s, V0_uncerts, time) :
+        lbl = "Data Set " + t
+        plt.errorbar(bl, abs(v0), v0_uncert, label=lbl, xerr=bl_sig, fmt=".")
     b = np.linspace(0.1, 100, 1000)
     plt.plot(b, sinc(b, m), label="Fit", color="red")
-    plt.plot(b, sinc(b, m + 3*s), label="Fit ± 3 Sigma", color="red", linestyle="dashed")
-    plt.plot(b, sinc(b, m - 3*s), color="red", linestyle="dashed")
+    plt.plot(b, sinc(b, m + s), label="Fit ± Sigma", color="red", linestyle="dashed")
+    plt.plot(b, sinc(b, m - s), color="red", linestyle="dashed")
     plt.xlabel(r"$B_{eff}/\lambda$")
     plt.ylabel(r"$|V_0(B_\lambda)|$")
     plt.legend()
     plt.show()
 
     plt.figure()
-    for bl, bl_sig, v0, v0_uncert in zip(Bls, Bl_sigs, V0s, V0_uncerts) :
-        plt.errorbar(bl, abs(v0), v0_uncert, label="Different Data Sets", xerr=bl_sig, fmt=".")
+    for bl, bl_sig, v0, v0_uncert, t in zip(Bls, Bl_sigs, V0s, V0_uncerts, time) :
+        lbl = "Data Set " + t
+        plt.errorbar(bl, abs(v0), v0_uncert, label=lbl, xerr=bl_sig, fmt=".")
     plt.plot(Bl, sinc(Bl, m), label="Fit", color="red")
-    plt.plot(Bl, sinc(Bl, m + 3*s), label="Fit ± 3 Sigma", color="red", linestyle="dashed")
-    plt.plot(Bl, sinc(Bl, m - 3*s), color="red", linestyle="dashed")
+    plt.plot(Bl, sinc(Bl, m + s), label="Fit ± Sigma", color="red", linestyle="dashed")
+    plt.plot(Bl, sinc(Bl, m - s), color="red", linestyle="dashed")
     plt.xlabel(r"$B_{eff}/\lambda$")
     plt.ylabel(r"$|V_0(B_\lambda)|$")
     plt.legend()
