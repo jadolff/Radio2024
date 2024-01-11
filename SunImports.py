@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from astropy.io import fits
 from scipy.constants import c
-import os
 ###############
 
 
@@ -14,7 +13,7 @@ def read_in_data(file) :
     IN : file as ordner/filename
     OUT: 2D-array data, time, frequency
     """
-    path = os.path.join(os.getcwd(), file)
+    path = '/Users/juliusadolff/Desktop/Interferometer 2024/' + file
     f = fits.open(path)
     data = np.array(f[0].data, dtype=float)
     t = f[1].data['TIME'][0]
@@ -61,6 +60,32 @@ def sinc(Bl, alpha) :
     return np.sin(np.pi * Bl * alpha) / (np.pi * Bl * alpha)
 ###################
 
+
+### Monte Carlo ###
+rng = np.random.default_rng()
+
+def monte_carlo(data, t, mean, cov) :
+    
+    # Random Variables
+    N_mc = 1000
+    paras = rng.multivariate_normal(mean, cov, N_mc)
+    tmax = paras[:, 0]; sig = paras[:, 1]
+    S0 = paras[:, 2]; a = paras[:, 3]; b = paras[:, 4];
+    
+    # Data
+    mc_data = np.zeros((N_mc, *data.shape), dtype=float)
+    mc_mean = data.copy(); mc_sig = data.copy()
+    
+    for i in range(N_mc) :
+        mc_data[i, :] = ( data - N(t, a[i], b[i]) ) / (S0[i] * normal(t, tmax[i], sig[i]))
+    
+    for j in range(len(data)) :
+        mc_mean[j] = ( data[j] - N(t[j], mean[3], mean[4]) ) / (mean[2] * normal(t[j], mean[0], mean[1]))
+        mc_sig[j] = np.std(mc_data[:, j])
+    
+    # Return
+    return mc_mean, mc_sig
+
 ### Power Distribution 1st Step ###
 def data_filter(data, t, freq_pos, p0) :
     """
@@ -72,6 +97,8 @@ def data_filter(data, t, freq_pos, p0) :
     """
     # Generate Arrays For Return
     data_filtered = np.zeros(data[freq_pos[0] : freq_pos[1], :].shape, dtype=float)
+    data_filtered_error = np.zeros(data[freq_pos[0] : freq_pos[1], :].shape, dtype=float)
+    
     opt_params_tot = np.zeros((freq_pos[1] - freq_pos[0], 5), dtype=float)
     cov_tot = np.zeros((freq_pos[1] - freq_pos[0], 5, 5), dtype=float)
     
@@ -151,15 +178,24 @@ def data_filter(data, t, freq_pos, p0) :
         cov_tot[k, :, :] = cov
         
         # Filter Data
-        S0, a, b = params
-        data_filtered[k, :] = (data[f, :] - (a*t+b))/(S0 * normal(t, tmax_opt, sigma_opt))
+        para_mc = np.array([tmax_opt, sigma_opt, params[0], params[1], params[2]])
+        cov_mc = np.diag([sig_t**2, sig_sigma**2, cov[0, 0], cov[1, 1], cov[2, 2]])
+        data_filtered[k, :], data_filtered_error[k, :] = monte_carlo(data[f, :], t, para_mc, cov_mc)
+        
+        """
+        cov_mc_cross = np.zeros((cov.shape[0]+2, cov.shape[1]+2))
+        cov_mc_cross[0,0] = sig_t**2
+        cov_mc_cross[1,1] = sig_sigma**2
+        cov_mc_cross[2:,2:] = cov
+        data_filtered[k, :], data_filtered_error[k, :] = monte_carlo(data[f, :], t, para_mc, cov_mc_cross)
+        """
     
     # Return
-    return data_filtered, opt_params_tot, cov_tot, tmax_opt, sigma_opt, params_opt, fmin
+    return data_filtered, data_filtered_error, opt_params_tot, cov_tot, tmax_opt, sigma_opt, params_opt, fmin
 ##################
 
 ### Power Distribution 2nd Step ###
-def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
+def data_fitter(data_filtered, data_filtered_error, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
     """
     data_filtered is result of previous function. 
     t, freqs are standart notation.
@@ -169,18 +205,22 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
     returns V0 and Beff/lambda.
     """
     # Concentrate on sigma/2 neighboorhoud tmax
-    eps = 2.0
+    eps = 5.0
     a = np.where(eps > abs(tmax - t))[0][0]
     d = ( np.where(eps > abs(tmax + sigma/omega - t))[0][0] - np.where(eps > abs(tmax - t))[0][0] ) // 2
     t_range = t[a-d : a+d]
     
     # Generate Arrays for Return
+    V0 = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
+    V0_uncertainties = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
     lamda = c/freqs[freq_pos[0] : freq_pos[1]]
     
     # Find optimal Beff
     chisq = np.zeros(freq_pos[1] - freq_pos[0], dtype=float)
     our_freqs = np.arange(freq_pos[0], freq_pos[1])
     opt_params_tot = np.zeros((freq_pos[1] - freq_pos[0], 3), dtype=float)
+    opt_cov = np.zeros((freq_pos[1] - freq_pos[0], 3, 3), dtype=float)
+    
     for k, f in enumerate(our_freqs) :
         # Get p0
         if k == 0 :
@@ -193,40 +233,50 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
         model_fit = lambda t, V0, Beff, phi : 1 + V0 * np.cos(2 * np.pi * Beff * omega * t / l + phi)
         
         # Fit
-        params, cov = curve_fit(model_fit, t_range, data_filtered[k, a-d : a+d], p, maxfev=5000)
+        params, cov = curve_fit(model_fit, t_range, data_filtered[k, a-d : a+d], p, maxfev=5000, sigma=100*data_filtered_error[k, a-d : a+d])
         chi2 = 1.0 * np.sum( (model_fit(t_range, *params) - data_filtered[k, a-d : a+d])**2 ) 
         opt_params_tot[k, :] = params
+        opt_cov[k, :, :] = cov
         chisq[k] = chi2
         
     chimin = min(chisq)
     for k in range(len(chisq)) :
         if chisq[k] == chimin : 
             Beff_opt = abs(opt_params_tot[k, 1])
+            Beff_sig = np.std(opt_params_tot[:, 1])
     
     print("Optimal Value of Beff")
     print("----------------------------------------")
-    print(f"Beff  = {Beff_opt:.3} m")
+    print(f"Beff  = {Beff_opt:.3} ± {Beff_sig:.3} m")
     print("")
     
     # Loop over all frequencies, use opt_params from previous as p0 
-    V0 = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
-    V0_uncertainties = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
-    phi = np.zeros((freq_pos[1] - freq_pos[0]), dtype=float)
     our_freqs = np.arange(freq_pos[0], freq_pos[1])
     for k, f in enumerate(our_freqs) :
         # Model For Fit (lambda dependet)
         l = c/freqs[f]
-        model_fit = lambda t, V0, phi : 1 + V0 * np.cos(2 * np.pi * Beff_opt * omega * t / l + phi)
         p = np.array([ sinc(Beff_opt/l, np.deg2rad(0.5)), 0.0 ])
         
         # Fit
-        params, cov = curve_fit(model_fit, t_range, data_filtered[k, a-d : a+d], p, maxfev=5000)
-        chi2 = 1.0 * np.sum( (model_fit(t_range, *params) - data_filtered[k, a-d : a+d])**2 ) 
+        N_mc = 100
+        mean = np.concatenate( (np.array([Beff_opt]), data_filtered[k, a-d : a+d]) )
+        cov = np.diag( np.concatenate( (np.array([Beff_sig]), data_filtered_error[k, a-d : a+d]) ) )
+        paras = rng.multivariate_normal(mean, cov, N_mc)
+        V0_mc = np.zeros(N_mc, dtype=float)
+    
+        for i in range(N_mc) :
+            Beff_mc = paras[i, 0]
+            data_range_filtered = paras[i, 1:]
+            model_fit = lambda t, V0, phi : 1 + V0 * np.cos(2 * np.pi * Beff_mc * omega * t / l + phi)
+            params, cov = curve_fit(model_fit, t_range, data_range_filtered, p, maxfev=5000, sigma=data_filtered_error[k, a-d : a+d])
+            V0_mc[i] = params[0]
+        
         
         # Update
+        model_fit = lambda t, V0, phi : 1 + V0 * np.cos(2 * np.pi * Beff_opt * omega * t / l + phi)
+        params, cov = curve_fit(model_fit, t_range, data_filtered[k, a-d : a+d], p, maxfev=5000, sigma=data_filtered_error[k, a-d : a+d])
         V0[k] = params[0]
-        V0_uncertainties[k] = np.sqrt(cov[0, 0])
-        phi[k] = params[1]
+        V0_uncertainties[k] = np.std(V0_mc)
         
         # Optimal Paramters
         if f == fmin :
@@ -234,10 +284,11 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
             
         # Plot Fitted Data
         """
+        chi2 = 1.0 * np.sum( (model_fit(t_range, *params) - data_filtered[k, a-d : a+d])**2 ) 
         print(f"chisq in fit of {k}th f: r = {chi2:.3}")
         if k % 10 == 0:
             plt.figure()
-            plt.plot(t_range, data_filtered[k, a-d : a+d], label=f"Filtered Data of {k}th f")
+            plt.errorbar(t_range, data_filtered[k, a-d : a+d], yerr=data_filtered_error[k, a-d : a+d], fmt=".", label=f"Filtered Data of {k}th f")
             plt.plot(t_range, model_fit(t_range, *params), label="Fit of Wavelength Dependence")
             plt.xlabel("t [s]")
             plt.ylabel("Spectral Density [W/Hz]")
@@ -246,7 +297,7 @@ def data_fitter(data_filtered, t, freqs, freq_pos, tmax, sigma, p0, fmin) :
         """
         
     # Return Dependence
-    return V0, V0_uncertainties, Beff_opt/lamda, params_opt, phi
+    return V0, V0_uncertainties, Beff_opt/lamda, Beff_sig/lamda, params_opt
 ##################
 
 ### Nice Plot ###
@@ -259,8 +310,8 @@ def nice_plot(data, t, freq, params_opt1, params_opt2, fmin) :
         return S0 * (1 + V0 * np.cos(2 * np.pi * Beff * omega * t / l + phi)) * normal(t, tmax, sigma) + N(t, a, b)
     
     plt.figure()
-    plt.plot(t, data[fmin, :], label=f"Raw Data")
-    plt.plot(t, model(t, params_opt1, params_opt2), label="Total Fit")
+    plt.plot(t, (data[fmin, :]), label=f"Raw Data")
+    plt.plot(t, (model(t, params_opt1, params_opt2)), label="Total Fit")
     plt.xlabel("t [s]")
     plt.ylabel("Spectral Density [W/Hz]")
     plt.legend()
@@ -270,33 +321,53 @@ def nice_plot(data, t, freq, params_opt1, params_opt2, fmin) :
 #################
 
 ### Final Fit ###
-def sun_diameter(V0, V0_uncert, Bl, p) :
-    p, cov = curve_fit(sinc, Bl, abs(V0), p0=p, sigma=V0_uncert)
-    s = np.sqrt(cov[0, 0])
+def sun_diameter(V0, V0_uncert, Bl, Bl_sig, p) :
+    
+    N_mc = 1000
+    mean = np.concatenate( (V0, Bl) )
+    cov = np.diag( np.concatenate( (V0_uncert, Bl_sig) ) )
+    paras = rng.multivariate_normal(mean, cov, N_mc)
+    alpha_mc = np.zeros(N_mc, dtype=float)
+    
+    for i in range(N_mc) :
+        V0_mc = paras[i, :len(V0)]
+        Bl_mc = paras[i, len(V0):]
+        p, _ = curve_fit(sinc, Bl_mc, abs(V0_mc), p0=p)
+        alpha_mc[i] = p
+    
+    """
+    plt.figure()
+    plt.hist(alpha_mc)
+    plt.show()
+    """
+    
+    #m = np.median(alpha_mc)
+    m, _ = curve_fit(sinc, Bl, abs(V0), p0=p, sigma=V0_uncert)
+    s = np.std(alpha_mc)
     
     plt.figure()
-    plt.errorbar(Bl, abs(V0), V0_uncert, label="Data")
+    plt.errorbar(Bl, abs(V0), V0_uncert, label="Data", xerr=Bl_sig, fmt=".")
     b = np.linspace(0.1, 100, 1000)
-    plt.plot(b, sinc(b, p), label="Fit", color="red")
-    plt.plot(b, sinc(b, p + 3*s), label="Fit + 3 Sigma", color="red", linestyle="dashed")
-    plt.plot(b, sinc(b, p - 3*s), label="Fit - 3 Sigma", color="red", linestyle="dashed")
-    plt.xlabel(r"$B_\lambda/\lambda$")
+    plt.plot(b, sinc(b, m), label="Fit", color="red")
+    plt.plot(b, sinc(b, m + 3*s), label="Fit ± 3 Sigma", color="red", linestyle="dashed")
+    plt.plot(b, sinc(b, m - 3*s), color="red", linestyle="dashed")
+    plt.xlabel(r"$B_{eff}/\lambda$")
     plt.ylabel(r"$|V_0(B_\lambda)|$")
     plt.legend()
     plt.show()
 
     plt.figure()
-    plt.errorbar(Bl, abs(V0), V0_uncert, label="Data", fmt=".")
-    plt.plot(Bl, sinc(Bl, p), label="Fit", color="red")
-    plt.plot(Bl, sinc(Bl, p + 3*s), label="Fit + 3 Sigma", color="red", linestyle="dashed")
-    plt.plot(Bl, sinc(Bl, p - 3*s), label="Fit - 3 Sigma", color="red", linestyle="dashed")
-    plt.xlabel(r"$B_\lambda/\lambda$")
+    plt.errorbar(Bl, abs(V0), V0_uncert, label="Data", fmt=".", xerr=Bl_sig)
+    plt.plot(Bl, sinc(Bl, m), label="Fit", color="red")
+    plt.plot(Bl, sinc(Bl, m + 3*s), label="Fit ± 3 Sigma", color="red", linestyle="dashed")
+    plt.plot(Bl, sinc(Bl, m - 3*s), color="red", linestyle="dashed")
+    plt.xlabel(r"$B_{eff}/\lambda$")
     plt.ylabel(r"$|V_0(B_\lambda)|$")
     plt.legend()
     plt.show()
     
     from uncertainties import ufloat
-    alpha = ufloat(p[0], np.sqrt(cov[0, 0]))
+    alpha = ufloat(m, s)
     print(f"d = {alpha * 1.496e11:.P} m")
     print(f"alpha = {alpha:.P} rad")
 ##################
