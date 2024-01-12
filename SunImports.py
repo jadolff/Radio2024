@@ -5,6 +5,7 @@ from scipy.optimize import curve_fit
 from astropy.io import fits
 from scipy.constants import c
 import os
+from uncertainties import ufloat
 
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
@@ -120,7 +121,7 @@ def data_filter(data, t, freq_pos, p0) :
             p = opt_params_tot[k-1, :]
             
         # Fit data
-        params, cov = curve_fit(model_filter, t, data[f, :], p, maxfev=10000)
+        params, cov = curve_fit(model_filter, t, data[f, :], p, maxfev=20000)
         chi2 = 1.0 * np.sum( (model_filter(t, *params) - data[f, :])**2 ) 
         chisq[k] = chi2
         opt_params_tot[k, :] = params
@@ -143,6 +144,7 @@ def data_filter(data, t, freq_pos, p0) :
     print("")
     
     # sigma_opt = 0.065
+    tmax_opt, sigma_opt = 2000, 0.07
     
     # Def Model
     model_fit = lambda t, S0, a, b : S0 * normal(t, tmax_opt, sigma_opt) + N(t, a, b)
@@ -166,6 +168,8 @@ def data_filter(data, t, freq_pos, p0) :
         # Plot Fitted Data
         #print(f"chisq in fit of {k}th f: r = {chi2:.3}")
         if f == fmin :
+            print(params)
+            
             plt.figure()
             plt.plot(t, data[f, :], label=f"Raw Data of {k}th f", color="red")
             plt.plot(t, model_fit(t, *params), label="Fit of Offset and Exponential", color="blue")
@@ -335,48 +339,18 @@ def sun_diameter(V0, V0_uncert, Bl, Bl_sig, p) :
     for i in range(N_mc) :
         V0_mc = paras[i, :len(V0)]
         Bl_mc = paras[i, len(V0):]
-        p, _ = curve_fit(sinc, Bl_mc, abs(V0_mc), p0=p)
+        p, _ = curve_fit(sinc, Bl_mc, abs(V0_mc), p0=p, sigma=V0_uncert)
         alpha_mc[i] = p
     
-    """
-    plt.figure()
-    plt.hist(alpha_mc)
-    plt.show()
-    """
-    
-    m = np.median(alpha_mc)
-    #m, _ = curve_fit(sinc, Bl, abs(V0), p0=p)
+    m = np.mean(alpha_mc)
     s = np.std(alpha_mc)
     
-    plt.figure()
-    plt.errorbar(Bl, abs(V0), V0_uncert, label="Data", xerr=Bl_sig, fmt=".", color="blue")
-    b = np.linspace(0.1, 100, 1000)
-    plt.plot(b, sinc(b, m), label="Fit", color="red")
-    plt.plot(b, sinc(b, m + 3*s), label="Fit ± 3 Sigma", color="red", linestyle="dashed")
-    plt.plot(b, sinc(b, m - 3*s), color="red", linestyle="dashed")
-    plt.xlabel(r"$B_{eff}/\lambda$")
-    plt.ylabel(r"$|V_0(B_\lambda)|$")
-    plt.legend()
-    plt.show()
-
-    plt.figure()
-    plt.errorbar(Bl, abs(V0), V0_uncert, label="Data", fmt=".", xerr=Bl_sig, color="blue")
-    plt.plot(Bl, sinc(Bl, m), label="Fit", color="red")
-    plt.plot(Bl, sinc(Bl, m + 3*s), label="Fit ± 3 Sigma", color="red", linestyle="dashed")
-    plt.plot(Bl, sinc(Bl, m - 3*s), color="red", linestyle="dashed")
-    plt.xlabel(r"$B_{eff}/\lambda$")
-    plt.ylabel(r"$|V_0(B_\lambda)|$")
-    plt.legend()
-    plt.show()
-    
-    from uncertainties import ufloat
-    alpha = ufloat(m, s)
-    print(f"d = {alpha * 1.496e11:.P} m")
-    print(f"alpha = {alpha:.P} rad")
+    print(f"alpha = {ufloat(m, s):.P} rad")
+    return ufloat(m, s)
 ##################
 
 ### Final Glueing ###
-def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, time, p) :
+def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, time, alphas, p) :
     
     V0 = np.concatenate(V0s); V0_uncert = np.concatenate(V0_uncerts)
     Bl = np.concatenate(Bls); Bl_sig = np.concatenate(Bl_sigs)
@@ -394,20 +368,20 @@ def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, time, p) :
     # Calculation of Alpha
     alpha_mc = np.zeros(N_mc, dtype=float)
     for i in range(N_mc) :
-        p, cov_fit = curve_fit(sinc, Bl_mc[:, i], abs(V0_mc[i, :]), p0=p)
+        p, cov_fit = curve_fit(sinc, Bl_mc[:, i], abs(V0_mc[i, :]), p0=p, sigma=V0_uncert)
         alpha_sig[i] = np.sqrt(cov_fit[0, 0])
         alpha_mc[i] = p
-    plt.figure()
-    plt.hist(alpha_mc)
-    plt.xlabel(r"$\alpha$")
-    plt.ylabel("Frequency")
-    plt.show()
     
     m = np.median(alpha_mc)
     #m, _ = curve_fit(sinc, Bl, abs(V0), p0=p)
-    s = np.std(alpha_mc) + np.mean(alpha_sig)
-    """
+    s = ( np.std(alpha_mc) + np.mean(alpha_sig) )
     
+    plt.figure()
+    plt.hist(alpha_mc, bins=100)
+    plt.xlabel(r"$\alpha$")
+    plt.ylabel("Frequency")
+    plt.show()
+
     # Use Analytic Solution for alpha
     from scipy.optimize import fsolve
     N_mc = 500
@@ -425,14 +399,27 @@ def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, time, p) :
             alpha_cloud.append( fsolve(sinc_fsolve, 0.01, xtol=1e-14, fprime=jac_fsolve)[0] )
     
     alpha_mc = np.sort(np.array(alpha_cloud))
+    #m = np.median(alpha_mc)
+    m, _ = curve_fit(sinc, Bl, abs(V0), p0=p, sigma=V0_uncert)
+    s = np.std(alpha_mc)/np.sqrt(n)
     
     plt.figure()
     plt.hist(alpha_mc, bins=100)
     plt.xlabel(r"$\alpha$")
     plt.ylabel("Frequency")
     plt.show()
-    m = np.median(alpha_mc)
-    s = np.std(alpha_mc)
+    """
+    
+    alpha = ufloat(np.average( np.array([alphai.n for alphai in alphas]), weights=1/np.array([alphai.s for alphai in alphas])**2 ), 
+                   np.std([alphai.n for alphai in alphas]) / np.sqrt( len(alphas) ) )
+    m = alpha.n
+    s = alpha.s
+    
+    plt.figure( figsize=(8, 6) )
+    plt.errorbar(time, np.array([alphai.n for alphai in alphas]), np.array([alphai.s for alphai in alphas]), fmt=".")
+    plt.xlabel("Data Set")
+    plt.ylabel(r"$\alpha$")
+    plt.show()
     
     plt.figure()
     for bl, bl_sig, v0, v0_uncert, t in zip(Bls, Bl_sigs, V0s, V0_uncerts, time) :
@@ -459,8 +446,13 @@ def sun_diameter_final(V0s, V0_uncerts, Bls, Bl_sigs, time, p) :
     plt.legend()
     plt.show()
     
-    from uncertainties import ufloat
-    alpha = ufloat(m, s)
-    print(f"d = {alpha * 1.496e11:.P} m")
+    print("Alpha Commuted as Weigthed Sum of Fits of Indivdual Data Sets")
+    print("-------------------------------------------------------------")
+    print(f"d = {alpha * (149597870700 - 6370e3):.P} m")
+    R0 = 696243e3;
+    print(f"d_exakt = {2 * R0 * 1.2} m")
+    d = alpha * (149597870700 - 6370e3)
+    print(f"R/R0 = {d/(2*R0):.P}")
     print(f"alpha = {alpha:.P} rad")
+    print(f"Number of Datapoints = {len(V0)}")
 #####################
